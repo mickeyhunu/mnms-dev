@@ -1,9 +1,0 @@
-/* 파일 역할: styles 화면 스타일(레이아웃/컴포넌트/반응형 등)을 정의하는 스타일시트 파일. */
-@import '../styles/common.css';
-@import '../styles/layout.css';
-@import '../styles/components.css';
-@import '../styles/pages.css';
-@import '../styles/postDetail.css';
-@import '../styles/community-board.css';
-@import '../styles/home-dark.css';
-@import '../styles/responsive.css';
