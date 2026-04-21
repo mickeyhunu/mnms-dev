@@ -1,0 +1,533 @@
+const { pool } = require('../../config/db');
+const { getContentProtectionMarkup, getSvgContentProtectionElements } = require('./contentProtection');
+
+const COMMUNITY_CHAT_LINK = 'https://open.kakao.com/o/gALpMlRg';
+const ROOM_PAGE_TEXT = {
+  loading: '룸 정보를 불러오는 중입니다...',
+  error: '룸 정보를 가져오지 못했습니다. 잠시 후 다시 시도해주세요.',
+  detailEmpty: '상세 정보 없음',
+  empty: '등록된 룸현황 정보가 없습니다.',
+  roomLabel: '룸 정보',
+  waitLabel: '웨이팅 정보',
+  updatedLabel: '업데이트',
+  summaryAll: '총 가게 수',
+  summarySingle: '룸현황',
+};
+
+const KOREA_TIME_ZONE = 'Asia/Seoul';
+const MYSQL_DATETIME_FORMAT = '%Y-%m-%d %H:%i:%s';
+
+function parseKoreanDateTime(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+
+  const hasExplicitTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const isoLikeValue = normalized.includes('T') ? normalized : normalized.replace(' ', 'T');
+  const parseTarget = hasExplicitTimeZone ? isoLikeValue : `${isoLikeValue}+09:00`;
+  const parsed = new Date(parseTarget);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatKoreanDateTime(value) {
+  const date = parseKoreanDateTime(value);
+  if (!date) return 'N/A';
+
+  return date.toLocaleString('ko-KR', { timeZone: KOREA_TIME_ZONE });
+}
+
+function escapeXml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function flattenDetail(value, prefix = '', lines = [], level = 0) {
+  const padding = '  '.repeat(level);
+
+  if (value === null || value === undefined) {
+    lines.push(`${padding}${prefix}: `);
+    return lines;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const key = prefix ? `${prefix}.${index}` : String(index);
+      flattenDetail(item, key, lines, level);
+    });
+    return lines;
+  }
+
+  if (typeof value === 'object') {
+    for (const [key, val] of Object.entries(value)) {
+      const nextKey = prefix ? `${prefix}.${key}` : key;
+      if (val !== null && typeof val === 'object') {
+        flattenDetail(val, nextKey, lines, level);
+      } else {
+        lines.push(`${padding}${nextKey}: ${val ?? ''}`);
+      }
+    }
+    return lines;
+  }
+
+  lines.push(`${padding}${prefix}: ${value}`);
+  return lines;
+}
+
+function safeParseJSON(raw) {
+  if (raw == null) return { obj: null, text: null };
+
+  if (typeof raw === 'object' && !Buffer.isBuffer(raw)) {
+    return { obj: raw, text: null };
+  }
+  const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+
+  try {
+    return { obj: JSON.parse(text), text: null };
+  } catch (error) {
+    // ignore
+  }
+
+  try {
+    const fixed = text
+      .replace(/\r?\n|\r/g, ' ')
+      .replace(/([{\s,])(\w+)\s*:/g, '$1"$2":')
+      .replace(/'/g, '"');
+    return { obj: JSON.parse(fixed), text: null };
+  } catch (error) {
+    // ignore
+  }
+
+  return { obj: null, text };
+}
+
+function extractDetailLines(detailObj, detailRaw) {
+  if (detailObj) {
+    return flattenDetail(detailObj);
+  }
+
+  if (typeof detailRaw === 'string') {
+    const cleaned = detailRaw.replace(/[{}\"]/g, '');
+    return cleaned
+      .split(/\r?\n|\r/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function buildCompositeSvg(lines, options = {}) {
+  const {
+    defaultFontSize = 24,
+    defaultLineHeight = defaultFontSize * 1.4,
+    padding = 24,
+    background = '#ffffff',
+    textColor = '#111111',
+    borderRadius = 24,
+    borderColor = '#dddddd',
+    borderWidth = 1,
+    minWidth = 480,
+  } = options;
+
+  const normalizedLines = (Array.isArray(lines) ? lines : [lines]).map((line) =>
+    typeof line === 'string' ? { text: line } : { ...line }
+  );
+
+  if (!normalizedLines.length) {
+    normalizedLines.push({ text: '' });
+  }
+
+  let estimatedWidth = minWidth;
+  normalizedLines.forEach((line) => {
+    const fontSize = line.fontSize ?? defaultFontSize;
+    const contentWidth = Math.ceil((line.text?.length || 0) * (fontSize * 0.65));
+    estimatedWidth = Math.max(estimatedWidth, padding * 2 + contentWidth);
+  });
+
+  let totalHeight = padding;
+  const metrics = normalizedLines.map((line, index) => {
+    const fontSize = line.fontSize ?? defaultFontSize;
+    const lineHeight = line.lineHeight ?? defaultLineHeight;
+    const gapBefore = index === 0 ? 0 : line.gapBefore ?? 0;
+    const dy = index === 0 ? 0 : gapBefore + lineHeight;
+
+    totalHeight += index === 0 ? fontSize : dy;
+
+    return {
+      ...line,
+      fontSize,
+      lineHeight,
+      gapBefore,
+      dy,
+    };
+  });
+  totalHeight += padding;
+
+  let textY = padding;
+  const spans = metrics
+    .map((line, index) => {
+      const fontWeight = line.fontWeight ?? 'normal';
+      const content = escapeXml(line.text ?? '');
+
+      if (index === 0) {
+        textY += line.fontSize;
+        return `<tspan x="${padding}" y="${textY}" font-size="${line.fontSize}" font-weight="${fontWeight}">${content}</tspan>`;
+      }
+
+      return `<tspan x="${padding}" dy="${line.dy}" font-size="${line.fontSize}" font-weight="${fontWeight}">${content}</tspan>`;
+    })
+    .join('');
+
+  const { defsMarkup: svgProtectionDefs, scriptMarkup: svgProtectionScript } =
+    getSvgContentProtectionElements();
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${estimatedWidth}" height="${totalHeight}" role="img">
+  <defs>
+    <style>
+      text { font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: ${textColor}; }
+    </style>
+    ${svgProtectionDefs}
+  </defs>
+  <rect x="0" y="0" rx="${borderRadius}" ry="${borderRadius}" width="${estimatedWidth}" height="${totalHeight}" fill="${background}" stroke="${borderColor}" stroke-width="${borderWidth}" />
+  <text x="${padding}" y="${padding}" font-size="${defaultFontSize}" xml:space="preserve">
+    ${spans}
+  </text>
+  ${svgProtectionScript}
+</svg>`;
+
+  return { svg, width: estimatedWidth, height: totalHeight };
+}
+
+const ROOM_IMAGE_OPTIONS = {
+  defaultFontSize: 24,
+  defaultLineHeight: 34,
+  padding: 40,
+  background: '#ffffff',
+  borderColor: '#d0d0d0',
+  minWidth: 560,
+};
+
+function normalizeRoomRow(room) {
+  const roomInfoDisplay = Number(room.roomInfo) === 999 ? '여유' : room.roomInfo ?? 'N/A';
+  const waitInfoDisplay = room.waitInfo ?? 'N/A';
+  const { obj: detailObj, text: detailRaw } = safeParseJSON(room.roomDetail);
+
+  const updatedAtDisplay = formatKoreanDateTime(room.updatedAt);
+
+  return {
+    storeNo: room.storeNo,
+    storeName: room.storeName,
+    roomInfo: roomInfoDisplay,
+    waitInfo: waitInfoDisplay,
+    detailObj,
+    detailRaw,
+    updatedAt: room.updatedAt,
+    updatedAtDisplay,
+  };
+}
+
+function serializeRoomForPayload(room) {
+  const detailLines = extractDetailLines(room.detailObj, room.detailRaw);
+
+  return {
+    storeNo: room.storeNo,
+    storeName: room.storeName,
+    roomInfo: room.roomInfo,
+    waitInfo: room.waitInfo,
+    updatedAt: room.updatedAt,
+    updatedAtDisplay: room.updatedAtDisplay,
+    detailLines,
+  };
+}
+
+async function fetchSingleRoomStatus(storeNo) {
+  const [[room]] = await pool.query(
+    `SELECT r.storeNo, s.storeName, r.roomInfo, r.waitInfo, r.roomDetail,
+            DATE_FORMAT(r.updatedAt, '${MYSQL_DATETIME_FORMAT}') AS updatedAt
+         FROM INFO_ROOM r
+         JOIN INFO_STORE s ON s.storeNo = r.storeNo
+        WHERE r.storeNo=?`,
+    [storeNo]
+  );
+
+  if (!room) {
+    return null;
+  }
+
+  return normalizeRoomRow(room);
+}
+
+async function fetchAllRoomStatuses() {
+  const [rooms] = await pool.query(
+    `SELECT r.storeNo, s.storeName, r.roomInfo, r.waitInfo, r.roomDetail,
+            DATE_FORMAT(r.updatedAt, '${MYSQL_DATETIME_FORMAT}') AS updatedAt
+         FROM INFO_ROOM r
+         JOIN INFO_STORE s ON s.storeNo = r.storeNo
+        ORDER BY r.storeNo ASC`
+  );
+
+  return rooms.map(normalizeRoomRow);
+}
+
+async function renderRoomInfoData(req, res, next) {
+  try {
+    const { storeNo } = req.params;
+    const storeId = Number(storeNo);
+
+    if (Number.isNaN(storeId)) {
+      res.status(400).json({ error: '잘못된 매장 번호입니다.' });
+      return;
+    }
+
+    const isAllStores = storeId === 0;
+    if (isAllStores) {
+      const rooms = await fetchAllRoomStatuses();
+      if (!rooms.length) {
+        res.status(404).json({ error: '룸현황 정보가 없습니다.' });
+        return;
+      }
+
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        mode: 'all',
+        totalStores: rooms.length,
+        rooms: rooms.map(serializeRoomForPayload),
+      });
+      return;
+    }
+
+    const room = await fetchSingleRoomStatus(storeId);
+    if (!room) {
+      res.status(404).json({ error: '룸현황 정보가 없습니다.' });
+      return;
+    }
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      mode: 'single',
+      totalStores: 1,
+      rooms: [serializeRoomForPayload(room)],
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function renderRoomInfo(req, res, next) {
+  try {
+    const { storeNo } = req.params;
+    const storeId = Number(storeNo);
+
+    if (Number.isNaN(storeId)) {
+      res.status(400).send('잘못된 매장 번호입니다.');
+      return;
+    }
+
+    const isAllStores = storeId === 0;
+    let pageTitle = '전체 가게 룸현황';
+    let pageHeading = '전체 가게 룸현황';
+    let preloadedData = null;
+
+    if (!isAllStores) {
+      const room = await fetchSingleRoomStatus(storeId);
+      if (!room) {
+        res.status(404).send('룸현황 정보가 없습니다.');
+        return;
+      }
+
+      pageTitle = `${room.storeName} 룸현황`;
+      pageHeading = `${room.storeName} 룸현황`;
+
+      preloadedData = {
+        mode: 'single',
+        totalStores: 1,
+        rooms: [serializeRoomForPayload(room)],
+      };
+    } else {
+      const rooms = await fetchAllRoomStatuses();
+      preloadedData = {
+        mode: 'all',
+        totalStores: rooms.length,
+        rooms: rooms.map(serializeRoomForPayload),
+      };
+    }
+
+    res.render('room-map', {
+      pageTitle,
+      pageHeading,
+      isAllStores,
+      dataEndpoint: `/entry/roommap/${storeNo}/data.json`,
+      preloadedData,
+      entryLocale: 'ko',
+      communityLink: COMMUNITY_CHAT_LINK,
+      contentProtectionMarkup: getContentProtectionMarkup(),
+      loadingText: ROOM_PAGE_TEXT.loading,
+      errorText: ROOM_PAGE_TEXT.error,
+      emptyText: ROOM_PAGE_TEXT.empty,
+      detailEmptyText: ROOM_PAGE_TEXT.detailEmpty,
+      roomLabel: ROOM_PAGE_TEXT.roomLabel,
+      waitLabel: ROOM_PAGE_TEXT.waitLabel,
+      updatedLabel: ROOM_PAGE_TEXT.updatedLabel,
+      summaryAllLabel: ROOM_PAGE_TEXT.summaryAll,
+      summarySingleLabel: ROOM_PAGE_TEXT.summarySingle,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+function buildRoomImageLines(room) {
+  const detailLines = extractDetailLines(room.detailObj, room.detailRaw);
+
+  const lines = [
+    { text: `${room.storeName} 룸현황`, fontSize: 44, fontWeight: '700' },
+    { text: `룸 정보: ${room.roomInfo}`, fontSize: 28, fontWeight: '600', gapBefore: 20 },
+    { text: `웨이팅 정보: ${room.waitInfo}`, fontSize: 24, gapBefore: 12 },
+  ];
+
+  if (detailLines.length) {
+    lines.push({ text: '상세 정보', fontSize: 30, fontWeight: '700', gapBefore: 28 });
+    detailLines.forEach((line, index) => {
+      lines.push({
+        text: line,
+        fontSize: 22,
+        lineHeight: 32,
+        gapBefore: index === 0 ? 12 : 8,
+      });
+    });
+  } else {
+    lines.push({
+      text: '상세 정보 없음',
+      fontSize: 24,
+      lineHeight: 32,
+      gapBefore: 28,
+    });
+  }
+
+  lines.push({
+    text: `업데이트: ${room.updatedAtDisplay}`,
+    fontSize: 20,
+    gapBefore: 24,
+  });
+
+  return lines;
+}
+
+function buildAllRoomImageLines(rooms) {
+  const lines = [
+    { text: '전체 가게 룸현황', fontSize: 44, fontWeight: '700' },
+    {
+      text: `총 가게 수: ${rooms.length}곳`,
+      fontSize: 28,
+      fontWeight: '600',
+      gapBefore: 16,
+    },
+  ];
+
+  rooms.forEach((room) => {
+    const detailLines = extractDetailLines(room.detailObj, room.detailRaw);
+
+    lines.push({
+      text: room.storeName,
+      fontSize: 34,
+      fontWeight: '700',
+      gapBefore: 32,
+    });
+    lines.push({
+      text: `룸 정보: ${room.roomInfo}`,
+      fontSize: 26,
+      fontWeight: '600',
+      gapBefore: 12,
+    });
+    lines.push({
+      text: `웨이팅 정보: ${room.waitInfo}`,
+      fontSize: 24,
+      gapBefore: 8,
+    });
+
+    if (detailLines.length) {
+      lines.push({
+        text: '상세 정보',
+        fontSize: 28,
+        fontWeight: '600',
+        gapBefore: 16,
+      });
+
+      detailLines.forEach((line, index) => {
+        lines.push({
+          text: line,
+          fontSize: 22,
+          lineHeight: 32,
+          gapBefore: index === 0 ? 10 : 6,
+        });
+      });
+    } else {
+      lines.push({
+        text: '상세 정보 없음',
+        fontSize: 22,
+        lineHeight: 32,
+        gapBefore: 16,
+      });
+    }
+
+    lines.push({
+      text: `업데이트: ${room.updatedAtDisplay}`,
+      fontSize: 20,
+      gapBefore: 14,
+    });
+  });
+
+  return lines;
+}
+
+async function renderRoomImage(req, res, next) {
+  try {
+    const { storeNo } = req.params;
+
+    const storeId = Number(storeNo);
+
+    if (storeId === 0) {
+      const rooms = await fetchAllRoomStatuses();
+      if (!rooms.length) return res.status(404).send('룸현황 정보가 없습니다.');
+
+      const lines = buildAllRoomImageLines(rooms);
+      const { svg } = buildCompositeSvg(lines, ROOM_IMAGE_OPTIONS);
+
+      res.set('Cache-Control', 'private, no-store');
+      res.type('image/svg+xml').send(svg);
+    } else {
+      const room = await fetchSingleRoomStatus(storeNo);
+      if (!room) return res.status(404).send('룸현황 정보가 없습니다.');
+
+      const lines = buildRoomImageLines(room);
+      const { svg } = buildCompositeSvg(lines, ROOM_IMAGE_OPTIONS);
+
+      res.set('Cache-Control', 'private, no-store');
+      res.type('image/svg+xml').send(svg);
+    }
+
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const referer = req.get('referer') || '직접 요청';
+    const userAgent = req.get('user-agent') || '알 수 없음';
+    console.log(`[ROOMIMAGE ACCESS] IP:${ip} REF:${referer} UA:${userAgent}`);
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  renderRoomInfo,
+  renderRoomInfoData,
+  renderRoomImage,
+};

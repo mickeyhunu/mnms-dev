@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.community.suin.CommentMapper">
+
+    <select id="findCommentsByPostId" resultType="com.community.suin.CommentResponse">
+        SELECT
+            c.id,
+            c.content,
+            c.author_id as authorId,
+            u.nickname as authorNickname,
+            u.role as authorRole,
+            c.post_id as postId,
+            c.parent_id as parentId,
+            c.created_at as createdAt,
+            c.updated_at as updatedAt
+        FROM comments c
+        JOIN users u ON c.author_id = u.id
+        WHERE c.post_id = #{postId}
+        ORDER BY c.created_at ASC
+    </select>
+
+    <insert id="insertComment">
+        <selectKey keyProperty="id" resultType="Long" order="BEFORE">
+            SELECT NVL(MAX(id),0)+1 FROM comments
+        </selectKey>
+        INSERT INTO comments (id, content, post_id, author_id, parent_id, created_at, updated_at)
+        VALUES (#{id}, #{content}, #{postId}, #{userId}, #{parentId, jdbcType=BIGINT}, SYSDATE, SYSDATE)
+    </insert>
+
+    <select id="findCommentById" resultType="com.community.suin.CommentResponse">
+        SELECT
+            c.id,
+            c.content,
+            c.author_id as authorId,
+            u.nickname as authorNickname,
+            u.role as authorRole,
+            c.post_id as postId,
+            c.parent_id as parentId,
+            c.created_at as createdAt,
+            c.updated_at as updatedAt
+        FROM comments c
+        JOIN users u ON c.author_id = u.id
+        WHERE c.id = #{id}
+    </select>
+
+    <select id="isCommentAuthor" resultType="boolean">
+        SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END FROM comments WHERE id = #{id} AND author_id = #{userId}
+    </select>
+
+    <update id="updateComment">
+        UPDATE comments SET content = #{content}, updated_at = SYSDATE WHERE id = #{id}
+    </update>
+
+    <delete id="deleteComment">
+        DELETE FROM comments WHERE id = #{id}
+    </delete>
+
+    <select id="isAdmin" resultType="boolean">
+        SELECT CASE WHEN role = 'ADMIN' THEN 1 ELSE 0 END FROM users WHERE id = #{userId}
+    </select>
+
+</mapper>

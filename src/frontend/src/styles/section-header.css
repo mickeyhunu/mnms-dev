@@ -1,0 +1,110 @@
+header.community-section-header {
+    position: sticky;
+    top: var(--app-header-offset);
+    z-index: 90;
+    height: var(--community-section-header-height);
+    padding: 0 max(12px, calc((100% - 1400px) / 2));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #171a1f;
+    color: #f8fafc;
+}
+
+header.community-section-header .community-header-left,
+header.community-section-header .community-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+header.community-section-header .community-header-left {
+    position: relative;
+}
+
+header.community-section-header .community-back-link {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
+}
+
+header.community-section-header .community-back-link svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+header.community-section-header .community-board-name {
+    font-size: 16px;
+    font-weight: 600;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+header.community-section-header .board-menu-toggle {
+    width: 36px;
+    height: 36px;
+    border: 1px solid #5d6472;
+    border-radius: 6px;
+    background: #242933;
+    color: #f8fafc;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+header.community-section-header .board-menu-toggle:hover {
+    background: #313848;
+}
+
+header.community-section-header .board-tabs {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 150px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border-radius: 8px;
+    background: #1f2430;
+    border: 1px solid #3a4150;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25);
+    z-index: 20;
+}
+
+header.community-section-header .board-tab {
+    width: 100%;
+    text-align: left;
+    border: 1px solid #41495a;
+    background: #2a3040;
+    color: #dbe2f1;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+header.community-section-header .board-tab:hover {
+    background: #353d4f;
+}
+
+header.community-section-header .board-tab.active {
+    border-color: #8f9bc1;
+    background: #3c455a;
+    color: #ffffff;
+}
